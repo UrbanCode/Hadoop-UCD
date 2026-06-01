@@ -1,0 +1,183 @@
+plugins {
+    id 'java'
+    id 'groovy'
+}
+
+group = 'com.ibm.urbancode'
+version = providers.gradleProperty('version').getOrElse('dev')
+
+def pluginName = 'Hadoop-UCD'
+
+defaultTasks 'clean', 'build'
+
+
+repositories {
+    mavenCentral()
+}
+
+/*
+ * Dependencies mapped from ivy.xml:
+ *   build conf  -> compileOnly  (groovy, groovy-ant)
+ *   test  conf  -> testImplementation (junit, hamcrest-core)
+ *   default conf -> none (no runtime dependencies)
+ * runtimeClasspath is intentionally empty to match Ant lib/ copy behaviour.
+ */
+dependencies {
+    compileOnly 'org.codehaus.groovy:groovy:3.0.9'
+    compileOnly 'org.codehaus.groovy:groovy-ant:3.0.9'
+
+    testImplementation 'junit:junit:4.11'
+    testImplementation 'org.hamcrest:hamcrest-core:1.3'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_1_8
+    targetCompatibility = JavaVersion.VERSION_1_8
+}
+
+sourceSets {
+    main {
+        java {
+            srcDirs = ['src/main/java']
+        }
+        groovy {
+            srcDirs = ['src/main/groovy']
+        }
+        resources {
+            srcDirs = ['src/main/java']
+            include '**/*.properties'
+        }
+    }
+    test {
+        java {
+            srcDirs = ['src/test/java']
+        }
+    }
+}
+
+/* =========================================================
+ * compile-classes equivalent:
+ * Compile Java + copy messages.properties + create hadoop.jar
+ * ========================================================= */
+tasks.register('createHadoopJar', Jar) {
+    dependsOn tasks.named('classes')
+    archiveBaseName = 'hadoop'
+    archiveVersion = ''
+    from sourceSets.main.output
+    destinationDirectory = layout.buildDirectory.dir('java')
+}
+
+/* =========================================================
+ * build target equivalents – copy all plugin artefacts
+ * ========================================================= */
+tasks.register('copyPluginFiles', Copy) {
+    from('plugin') {
+        include 'info.xml'
+        include 'upgrade.xml'
+        include 'plugin.xml'
+    }
+    into layout.buildDirectory.dir('plugin')
+}
+
+tasks.register('copyScripts', Copy) {
+    from 'src/main/scripts'
+    into layout.buildDirectory.dir('plugin/bin')
+}
+
+tasks.register('copyLicense', Copy) {
+    from('license') {
+        include 'EPL.txt'
+        include 'DCO1.1.txt'
+    }
+    into layout.buildDirectory.dir('plugin/license')
+}
+
+tasks.register('copyDoc', Copy) {
+    from('doc') {
+        include '*.html'
+        include '*.docx'
+    }
+    into layout.buildDirectory.dir('plugin/doc')
+}
+
+/*
+ * Ant copies lib/ excluding build/ and test/ sub-dirs.
+ * There are no default/runtime deps in ivy.xml, so lib/ root is empty.
+ * runtimeClasspath is also empty here (no implementation dependencies).
+ */
+tasks.register('copyLibs', Copy) {
+    from configurations.runtimeClasspath
+    into layout.buildDirectory.dir('plugin/lib')
+}
+
+tasks.register('copyGroovyClasses', Copy) {
+    from('src/main/groovy') {
+        include '**/*.groovy'
+    }
+    into layout.buildDirectory.dir('plugin/classes')
+}
+
+tasks.register('copyHadoopJar', Copy) {
+    dependsOn tasks.named('createHadoopJar')
+    from layout.buildDirectory.dir('java')
+    include 'hadoop.jar'
+    into layout.buildDirectory.dir('plugin/java')
+}
+
+tasks.register('buildPlugin') {
+    dependsOn 'copyPluginFiles', 'copyScripts', 'copyLicense', 'copyDoc',
+              'copyLibs', 'copyGroovyClasses', 'copyHadoopJar'
+    group = 'build'
+    description = 'Assembles the full plugin directory structure (equivalent to Ant build target)'
+}
+
+/* =========================================================
+ * dist target equivalent – zip build/plugin/ → releases/
+ * ========================================================= */
+tasks.register('pluginZip', Zip) {
+    dependsOn tasks.named('buildPlugin')
+    archiveBaseName = pluginName
+    archiveVersion = "v${version}"
+    from layout.buildDirectory.dir('plugin')
+    destinationDirectory = layout.projectDirectory.dir('releases')
+}
+
+tasks.register('dist') {
+    dependsOn tasks.named('pluginZip')
+    group = 'distribution'
+    description = 'Creates the plugin distribution ZIP (equivalent to Ant dist target)'
+}
+
+/* Wire dist into the standard build lifecycle */
+tasks.named('build') {
+    dependsOn tasks.named('dist')
+}
+
+/* =========================================================
+ * run-tests equivalent
+ * ========================================================= */
+tasks.named('test', Test) {
+    useJUnit()
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+        exceptionFormat 'full'
+        showStandardStreams = false
+    }
+    reports {
+        html.required = true
+        junitXml.required = true
+        html.outputLocation = layout.buildDirectory.dir('reports/tests')
+        junitXml.outputLocation = layout.projectDirectory.dir('releases/report')
+    }
+}
+
+/* =========================================================
+ * clean target equivalent
+ * ========================================================= */
+tasks.named('clean', Delete) {
+    delete fileTree('releases') {
+        include "**/${pluginName}-v*.zip"
+    }
+    delete 'lib/test'
+    delete 'lib/build/classes'
+}
