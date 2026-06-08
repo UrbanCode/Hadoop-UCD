@@ -3,181 +3,239 @@ plugins {
     id 'groovy'
 }
 
-group = 'com.ibm.urbancode'
+defaultTasks 'main'
+
 version = providers.gradleProperty('version').getOrElse('dev')
 
-def pluginName = 'Hadoop-UCD'
+ext {
+    pluginName = 'Hadoop-UCD'
 
-defaultTasks 'clean', 'build'
+    releasesDir = file("$projectDir/releases")
+    libDir = file("$projectDir/lib")
 
+    libBuildDir = file("$projectDir/lib/build")
+    libTestDir = file("$projectDir/lib/test")
+
+    libBuildClassesDir = file("$projectDir/lib/build/classes")
+    buildJavaDir = file("$buildDir/java")
+    buildPluginDir = file("$buildDir/plugin")
+    
+    libTestJavaDir = file("$projectDir/lib/test/java")
+}
 
 repositories {
     mavenCentral()
 }
 
-/*
- * Dependencies mapped from ivy.xml:
- *   build conf  -> compileOnly  (groovy, groovy-ant)
- *   test  conf  -> testImplementation (junit, hamcrest-core)
- *   default conf -> none (no runtime dependencies)
- * runtimeClasspath is intentionally empty to match Ant lib/ copy behaviour.
- */
-dependencies {
-    compileOnly 'org.codehaus.groovy:groovy:3.0.9'
-    compileOnly 'org.codehaus.groovy:groovy-ant:3.0.9'
-
-    testImplementation 'junit:junit:4.11'
-    testImplementation 'org.hamcrest:hamcrest-core:1.3'
+configurations {
+    buildConf
+    testConf
 }
 
-java {
-    sourceCompatibility = JavaVersion.VERSION_1_8
-    targetCompatibility = JavaVersion.VERSION_1_8
+dependencies {
+    buildConf 'org.codehaus.groovy:groovy-all:1.8.8'
+
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.hamcrest:hamcrest-core:1.3'
+
+    testConf 'junit:junit:4.13.2'
+    testConf 'org.hamcrest:hamcrest-core:1.3'
 }
 
 sourceSets {
     main {
-        java {
-            srcDirs = ['src/main/java']
-        }
-        groovy {
-            srcDirs = ['src/main/groovy']
-        }
-        resources {
-            srcDirs = ['src/main/java']
-            include '**/*.properties'
-        }
+        java.srcDirs = ['src/main/java']
+        groovy.srcDirs = ['src/main/groovy']
     }
+
     test {
-        java {
-            srcDirs = ['src/test/java']
+        java.srcDirs = ['src/test/java']
+        groovy.srcDirs = ['src/test/groovy']
+    }
+}
+
+tasks.register('main') {
+    dependsOn 'cleanBuild', 'resolve', 'compileClasses', 'buildPlugin', 'dist', 'runTests'
+    doLast {
+        println 'Plugin build complete!'
+    }
+}
+
+tasks.register('cleanBuild') {
+    description 'Clean build directory, releases directory, and lib directory'
+    delete buildDir
+    delete releasesDir
+    delete libDir
+
+    doLast {
+        mkdir buildDir
+    }
+}
+
+tasks.register('resolve') {
+    dependsOn 'cleanBuild'
+
+    doFirst {
+        mkdir libDir
+        mkdir libBuildDir
+        mkdir libTestDir
+    }
+
+    doLast {
+        copy {
+            from configurations.runtimeClasspath
+            into libDir
+        }
+
+        copy {
+            from configurations.buildConf
+            into libBuildDir
+        }
+
+        copy {
+            from configurations.testConf
+            into libTestDir
         }
     }
 }
 
-/* =========================================================
- * compile-classes equivalent:
- * Compile Java + copy messages.properties + create hadoop.jar
- * ========================================================= */
-tasks.register('createHadoopJar', Jar) {
-    dependsOn tasks.named('classes')
-    archiveBaseName = 'hadoop'
-    archiveVersion = ''
-    from sourceSets.main.output
-    destinationDirectory = layout.buildDirectory.dir('java')
-}
+tasks.register('compileClasses') {
 
-/* =========================================================
- * build target equivalents – copy all plugin artefacts
- * ========================================================= */
-tasks.register('copyPluginFiles', Copy) {
-    from('plugin') {
-        include 'info.xml'
-        include 'upgrade.xml'
-        include 'plugin.xml'
+    dependsOn 'resolve', 'compileJava', 'compileGroovy'
+
+    doLast {
+
+        mkdir libBuildClassesDir
+        mkdir buildJavaDir
+
+        copy {
+            from sourceSets.main.output.classesDirs
+            into libBuildClassesDir
+        }
+
+        copy {
+            from('src/main/java') {
+                include '**/*.properties'
+            }
+            into libBuildClassesDir
+        }
+
+        copy {
+            from 'src/main/java/com/ibm/rational/deploy/Hadoop/messages.properties'
+            into "$libBuildClassesDir/com/ibm/rational/deploy/Hadoop"
+        }
+
+        println 'Classes compiled successfully'
     }
-    into layout.buildDirectory.dir('plugin')
-}
-
-tasks.register('copyScripts', Copy) {
-    from 'src/main/scripts'
-    into layout.buildDirectory.dir('plugin/bin')
-}
-
-tasks.register('copyLicense', Copy) {
-    from('license') {
-        include 'EPL.txt'
-        include 'DCO1.1.txt'
-    }
-    into layout.buildDirectory.dir('plugin/license')
-}
-
-tasks.register('copyDoc', Copy) {
-    from('doc') {
-        include '*.html'
-        include '*.docx'
-    }
-    into layout.buildDirectory.dir('plugin/doc')
-}
-
-/*
- * Ant copies lib/ excluding build/ and test/ sub-dirs.
- * There are no default/runtime deps in ivy.xml, so lib/ root is empty.
- * runtimeClasspath is also empty here (no implementation dependencies).
- */
-tasks.register('copyLibs', Copy) {
-    from configurations.runtimeClasspath
-    into layout.buildDirectory.dir('plugin/lib')
-}
-
-tasks.register('copyGroovyClasses', Copy) {
-    from('src/main/groovy') {
-        include '**/*.groovy'
-    }
-    into layout.buildDirectory.dir('plugin/classes')
-}
-
-tasks.register('copyHadoopJar', Copy) {
-    dependsOn tasks.named('createHadoopJar')
-    from layout.buildDirectory.dir('java')
-    include 'hadoop.jar'
-    into layout.buildDirectory.dir('plugin/java')
 }
 
 tasks.register('buildPlugin') {
-    dependsOn 'copyPluginFiles', 'copyScripts', 'copyLicense', 'copyDoc',
-              'copyLibs', 'copyGroovyClasses', 'copyHadoopJar'
-    group = 'build'
-    description = 'Assembles the full plugin directory structure (equivalent to Ant build target)'
+
+    dependsOn 'resolve', 'createHadoopJar'
+
+    doLast {
+
+        mkdir buildPluginDir
+
+        copy {
+            from('plugin') {
+                include 'info.xml'
+                include 'upgrade.xml'
+                include 'plugin.xml'
+            }
+
+            into buildPluginDir
+        }
+
+        copy {
+            from 'src/main/scripts'
+            into "$buildPluginDir/bin"
+        }
+
+        copy {
+            from('license') {
+                include 'EPL.txt'
+                include 'DCO1.1.txt'
+            }
+            into "$buildPluginDir/license"
+        }
+
+        copy {
+            from('doc') {
+                include 'HowTo.html'
+                include '*.docx'
+            }
+            into "$buildPluginDir/doc"
+        }
+
+        copy {
+            from('lib') {
+                exclude '**/build/**'
+                exclude '**/test/**'
+            }
+            into "$buildPluginDir/lib"
+        }
+
+        copy {
+            from('src/main/groovy') {
+                include '**/*.groovy'
+            }
+            into "$buildPluginDir/classes"
+        }
+
+        copy {
+            from("$buildDir/java/hadoop.jar")
+            into "$buildPluginDir/java"
+        }
+    }
 }
 
-/* =========================================================
- * dist target equivalent – zip build/plugin/ → releases/
- * ========================================================= */
-tasks.register('pluginZip', Zip) {
-    dependsOn tasks.named('buildPlugin')
-    archiveBaseName = pluginName
-    archiveVersion = "v${version}"
-    from layout.buildDirectory.dir('plugin')
-    destinationDirectory = layout.projectDirectory.dir('releases')
+tasks.register('createHadoopJar', Jar) {
+
+    dependsOn 'compileClasses'
+
+    archiveFileName = 'hadoop.jar'
+    destinationDirectory = buildJavaDir
+
+    from libBuildClassesDir
 }
 
-tasks.register('dist') {
-    dependsOn tasks.named('pluginZip')
-    group = 'distribution'
-    description = 'Creates the plugin distribution ZIP (equivalent to Ant dist target)'
+tasks.register('dist', Zip) {
+    description = 'Create distribution zip'
+    dependsOn 'resolve', 'buildPlugin'
+    archiveFileName = "${pluginName}-v${version}.zip"
+    destinationDirectory = releasesDir
+    from buildPluginDir
+    doLast {
+        println '[zip] Building zip: ' + file("$releasesDir/${pluginName}-v${version}.zip")
+    }
 }
 
-/* Wire dist into the standard build lifecycle */
-tasks.named('build') {
-    dependsOn tasks.named('dist')
+tasks.register('runTests') {
+    description = 'Compile and run JUnit tests ()'
+    dependsOn 'compileTests', 'test'
 }
 
-/* =========================================================
- * run-tests equivalent
- * ========================================================= */
-tasks.named('test', Test) {
+tasks.register('compileTests') {
+    description = 'Compile test Java classes (equivalent to Ant compile-tests)'
+    dependsOn 'compileClasses', 'compileTestJava'
+}
+
+test {
     useJUnit()
-    testLogging {
-        events 'passed', 'skipped', 'failed'
-        exceptionFormat 'full'
-        showStandardStreams = false
-    }
+
     reports {
-        html.required = true
         junitXml.required = true
-        html.outputLocation = layout.buildDirectory.dir('reports/tests')
-        junitXml.outputLocation = layout.projectDirectory.dir('releases/report')
+        html.required = true
+
+        junitXml.outputLocation = layout.projectDirectory.dir("releases/report/xml")
+        html.outputLocation = layout.projectDirectory.dir("releases/report/html")
+    }
+
+    testLogging {
+        events "passed", "failed", "skipped"
     }
 }
 
-/* =========================================================
- * clean target equivalent
- * ========================================================= */
-tasks.named('clean', Delete) {
-    delete fileTree('releases') {
-        include "**/${pluginName}-v*.zip"
-    }
-    delete 'lib/test'
-    delete 'lib/build/classes'
-}
+
+
