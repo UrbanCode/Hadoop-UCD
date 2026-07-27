@@ -1,0 +1,241 @@
+plugins {
+    id 'java'
+    id 'groovy'
+}
+
+defaultTasks 'main'
+
+version = providers.gradleProperty('version').getOrElse('dev')
+
+ext {
+    pluginName = 'Hadoop-UCD'
+
+    releasesDir = file("$projectDir/releases")
+    libDir = file("$projectDir/lib")
+
+    libBuildDir = file("$projectDir/lib/build")
+    libTestDir = file("$projectDir/lib/test")
+
+    libBuildClassesDir = file("$projectDir/lib/build/classes")
+    buildJavaDir = file("$buildDir/java")
+    buildPluginDir = file("$buildDir/plugin")
+    
+    libTestJavaDir = file("$projectDir/lib/test/java")
+}
+
+repositories {
+    mavenCentral()
+}
+
+configurations {
+    buildConf
+    testConf
+}
+
+dependencies {
+    buildConf 'org.codehaus.groovy:groovy-all:1.8.8'
+
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.hamcrest:hamcrest-core:1.3'
+
+    testConf 'junit:junit:4.13.2'
+    testConf 'org.hamcrest:hamcrest-core:1.3'
+}
+
+sourceSets {
+    main {
+        java.srcDirs = ['src/main/java']
+        groovy.srcDirs = ['src/main/groovy']
+    }
+
+    test {
+        java.srcDirs = ['src/test/java']
+        groovy.srcDirs = ['src/test/groovy']
+    }
+}
+
+tasks.register('main') {
+    dependsOn 'cleanBuild', 'resolve', 'compileClasses', 'buildPlugin', 'dist', 'runTests'
+    doLast {
+        println 'Plugin build complete!'
+    }
+}
+
+tasks.register('cleanBuild') {
+    description 'Clean build directory, releases directory, and lib directory'
+    delete buildDir
+    delete releasesDir
+    delete libDir
+
+    doLast {
+        mkdir buildDir
+    }
+}
+
+tasks.register('resolve') {
+    dependsOn 'cleanBuild'
+
+    doFirst {
+        mkdir libDir
+        mkdir libBuildDir
+        mkdir libTestDir
+    }
+
+    doLast {
+        copy {
+            from configurations.runtimeClasspath
+            into libDir
+        }
+
+        copy {
+            from configurations.buildConf
+            into libBuildDir
+        }
+
+        copy {
+            from configurations.testConf
+            into libTestDir
+        }
+    }
+}
+
+tasks.register('compileClasses') {
+
+    dependsOn 'resolve', 'compileJava', 'compileGroovy'
+
+    doLast {
+
+        mkdir libBuildClassesDir
+        mkdir buildJavaDir
+
+        copy {
+            from sourceSets.main.output.classesDirs
+            into libBuildClassesDir
+        }
+
+        copy {
+            from('src/main/java') {
+                include '**/*.properties'
+            }
+            into libBuildClassesDir
+        }
+
+        copy {
+            from 'src/main/java/com/ibm/rational/deploy/Hadoop/messages.properties'
+            into "$libBuildClassesDir/com/ibm/rational/deploy/Hadoop"
+        }
+
+        println 'Classes compiled successfully'
+    }
+}
+
+tasks.register('buildPlugin') {
+
+    dependsOn 'resolve', 'createHadoopJar'
+
+    doLast {
+
+        mkdir buildPluginDir
+
+        copy {
+            from('plugin') {
+                include 'info.xml'
+                include 'upgrade.xml'
+                include 'plugin.xml'
+            }
+
+            into buildPluginDir
+        }
+
+        copy {
+            from 'src/main/scripts'
+            into "$buildPluginDir/bin"
+        }
+
+        copy {
+            from('license') {
+                include 'EPL.txt'
+                include 'DCO1.1.txt'
+            }
+            into "$buildPluginDir/license"
+        }
+
+        copy {
+            from('doc') {
+                include 'HowTo.html'
+                include '*.docx'
+            }
+            into "$buildPluginDir/doc"
+        }
+
+        copy {
+            from('lib') {
+                exclude '**/build/**'
+                exclude '**/test/**'
+            }
+            into "$buildPluginDir/lib"
+        }
+
+        copy {
+            from('src/main/groovy') {
+                include '**/*.groovy'
+            }
+            into "$buildPluginDir/classes"
+        }
+
+        copy {
+            from("$buildDir/java/hadoop.jar")
+            into "$buildPluginDir/java"
+        }
+    }
+}
+
+tasks.register('createHadoopJar', Jar) {
+
+    dependsOn 'compileClasses'
+
+    archiveFileName = 'hadoop.jar'
+    destinationDirectory = buildJavaDir
+
+    from libBuildClassesDir
+}
+
+tasks.register('dist', Zip) {
+    description = 'Create distribution zip'
+    dependsOn 'resolve', 'buildPlugin'
+    archiveFileName = "${pluginName}-v${version}.zip"
+    destinationDirectory = releasesDir
+    from buildPluginDir
+    doLast {
+        println '[zip] Building zip: ' + file("$releasesDir/${pluginName}-v${version}.zip")
+    }
+}
+
+tasks.register('runTests') {
+    description = 'Compile and run JUnit tests ()'
+    dependsOn 'compileTests', 'test'
+}
+
+tasks.register('compileTests') {
+    description = 'Compile test Java classes (equivalent to Ant compile-tests)'
+    dependsOn 'compileClasses', 'compileTestJava'
+}
+
+test {
+    useJUnit()
+
+    reports {
+        junitXml.required = true
+        html.required = true
+
+        junitXml.outputLocation = layout.projectDirectory.dir("releases/report/xml")
+        html.outputLocation = layout.projectDirectory.dir("releases/report/html")
+    }
+
+    testLogging {
+        events "passed", "failed", "skipped"
+    }
+}
+
+
+
